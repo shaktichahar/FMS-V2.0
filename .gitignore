@@ -1,0 +1,16 @@
+node_modules/
+build/
+dist/
+dist-apk/
+dev-dist/
+data/pglite/
+android-apk/.gradle/
+android-apk/build/
+android-apk/app/build/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+
