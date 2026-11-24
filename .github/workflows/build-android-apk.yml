@@ -101,14 +101,33 @@ jobs:
           retention-days: 90
 
       - name: Publish GitHub Release with direct APK download
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.create_release == true || github.event.inputs.create_release == 'true'
+        if: github.event_name != 'workflow_dispatch' || inputs.create_release != false
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('apk-v2.0.0-{0}', github.run_number) }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest-apk' }}
           name: LedgerFlow Android APK (v2.0.0)
+          make_latest: true
           body: |
             Automated Android APK build for **LedgerFlow v2.0.0** (App Developed by Shakti Chahar).
 
             - **Target App URL**: `${{ steps.resolve_url.outputs.url }}`
-            - **Installation**: Download `LedgerFlow-v2.0.0.apk` below on your Android phone and tap it to install (allow "Install unknown apps" if prompted).
+            - **Direct Download**: Click **`LedgerFlow-v2.0.0.apk`** under **Assets** below to download on your Android phone, then tap the file to install (allow "Install unknown apps" if prompted).
           files: dist-apk/LedgerFlow-v2.0.0.apk
+
+      - name: Add Direct APK Download Link to Job Summary
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          TAG_NAME: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest-apk' }}
+          APP_URL: ${{ steps.resolve_url.outputs.url }}
+        run: |
+          {
+            echo "## LedgerFlow Android APK Ready"
+            echo ""
+            echo "- **Direct APK Download:** [Download LedgerFlow-v2.0.0.apk](https://github.com/${REPO}/releases/download/${TAG_NAME}/LedgerFlow-v2.0.0.apk)"
+            echo "- **GitHub Releases Page:** [Open Releases](https://github.com/${REPO}/releases/tag/${TAG_NAME})"
+            echo "- **Target App URL:** \`${APP_URL}\`"
+            echo ""
+            echo "You can also download the zipped APK from the **Artifacts** section below on this page."
+          } >> "$GITHUB_STEP_SUMMARY"
+
