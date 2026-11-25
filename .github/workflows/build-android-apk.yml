@@ -63,7 +63,7 @@ jobs:
       - name: Build LedgerFlow Web Bundle & Embed into APK
         shell: bash
         run: |
-          npm install --no-audit --no-fund
+          npm install --legacy-peer-deps --no-audit --no-fund
           npm run build
           rm -rf android-apk/app/src/main/assets
           mkdir -p android-apk/app/src/main/assets
