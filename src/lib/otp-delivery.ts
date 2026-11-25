@@ -100,6 +100,26 @@ async function sendEmailOtpViaWebhook(
   return true;
 }
 
+function normalizeSmtpPassword(raw: string | undefined, isGmailHost: boolean): string {
+  const cleaned = String(raw || '')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .trim();
+  // Google displays 16-character App Passwords with spaces (e.g. "abcd efgh ijkl mnop")
+  return isGmailHost ? cleaned.replace(/\s+/g, '') : cleaned;
+}
+
+function formatSmtpFailureMessage(err: unknown): string {
+  const rawMsg = err instanceof Error ? err.message : String(err || '');
+  if (/534-5\.7\.9|Application-specific password required/i.test(rawMsg)) {
+    return 'Gmail requires a 16-character Google App Password (not your regular Gmail password). Enable 2-Step Verification at myaccount.google.com/apppasswords, generate an App Password for "LedgerFlow", and save it as GMAIL_APP_PASSWORD in Settings → Secrets (or set OTP_EMAIL_WEBHOOK_URL instead).';
+  }
+  if (/535-5\.7\.8|Username and Password not accepted/i.test(rawMsg)) {
+    return 'Gmail rejected SMTP credentials (535-5.7.8). Verify SMTP_USER matches your Gmail address and GMAIL_APP_PASSWORD is a valid 16-character Google App Password.';
+  }
+  return '';
+}
+
 async function sendEmailOtp(
   toEmail: string,
   fullName: string,
@@ -107,15 +127,35 @@ async function sendEmailOtp(
   otp: string,
   purpose: 'login' | 'direct-otp' | 'register' = 'login'
 ): Promise<boolean> {
-  const gmailPass = process.env.GMAIL_APP_PASSWORD?.trim();
-  const smtpPass = process.env.SMTP_PASS?.trim() || gmailPass;
-  if (!smtpPass) {
-    return sendEmailOtpViaWebhook(toEmail, fullName, loginIdentifier, otp, purpose);
+  const hasWebhook = Boolean(process.env.OTP_EMAIL_WEBHOOK_URL?.trim());
+  const host = process.env.SMTP_HOST?.trim() || 'smtp.gmail.com';
+  const isGmailHost = host.toLowerCase() === 'smtp.gmail.com';
+  const gmailPass = normalizeSmtpPassword(process.env.GMAIL_APP_PASSWORD, isGmailHost);
+  const smtpPass = normalizeSmtpPassword(process.env.SMTP_PASS, isGmailHost) || gmailPass;
+
+  if (hasWebhook) {
+    try {
+      const sent = await sendEmailOtpViaWebhook(toEmail, fullName, loginIdentifier, otp, purpose);
+      if (sent) {
+        return true;
+      }
+    } catch (webhookErr) {
+      console.error(
+        'OTP email webhook delivery failed:',
+        webhookErr instanceof Error ? webhookErr.message : webhookErr
+      );
+      if (!smtpPass) {
+        throw webhookErr;
+      }
+    }
   }
 
-  const host = process.env.SMTP_HOST?.trim() || 'smtp.gmail.com';
+  if (!smtpPass) {
+    return false;
+  }
+
   const user = process.env.SMTP_USER?.trim() || ADMIN_GMAIL;
-  const port = Number(process.env.SMTP_PORT || (host === 'smtp.gmail.com' ? 465 : 587));
+  const port = Number(process.env.SMTP_PORT || (isGmailHost ? 465 : 587));
   const secure =
     process.env.SMTP_SECURE !== undefined
       ? process.env.SMTP_SECURE === 'true'
@@ -228,6 +268,7 @@ export async function dispatchLoginOtp(params: {
   let emailSent = false;
   let smsSent = false;
   const failures: string[] = [];
+  let emailFailureReason = '';
 
   if (hasEmail) {
     try {
@@ -241,6 +282,7 @@ export async function dispatchLoginOtp(params: {
     } catch (err) {
       console.error('OTP email delivery failed:', err instanceof Error ? err.message : err);
       failures.push('Email');
+      emailFailureReason = formatSmtpFailureMessage(err);
     }
   }
 
@@ -276,6 +318,10 @@ export async function dispatchLoginOtp(params: {
       channels,
       notice,
     };
+  }
+
+  if (emailFailureReason) {
+    throw new Error(emailFailureReason);
   }
 
   if (failures.length > 0) {
