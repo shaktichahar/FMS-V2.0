@@ -10,15 +10,15 @@ def configuredOtpWebhookSecret = (project.findProperty("OTP_EMAIL_WEBHOOK_SECRET
 def escapedOtpWebhookSecret = configuredOtpWebhookSecret.replace("\\", "\\\\").replace("\"", "\\\"")
 
 android {
-    namespace 'in.ledgerflow.app'
-    compileSdk 34
+    namespace = 'in.ledgerflow.app'
+    compileSdk = 35
 
     defaultConfig {
-        applicationId 'in.ledgerflow.app'
-        minSdk 24
-        targetSdk 34
-        versionCode 4
-        versionName '2.0.0'
+        applicationId = 'in.ledgerflow.app'
+        minSdk = 24
+        targetSdk = 35
+        versionCode = 5
+        versionName = '2.0.0'
 
         buildConfigField 'String', 'APP_URL', "\"${escapedAppUrl}\""
         buildConfigField 'String', 'OTP_EMAIL_WEBHOOK_URL', "\"${escapedOtpWebhookUrl}\""
@@ -26,23 +26,23 @@ android {
     }
 
     buildFeatures {
-        buildConfig true
+        buildConfig = true
     }
 
     buildTypes {
         debug {
-            minifyEnabled false
-            debuggable false
+            minifyEnabled = false
+            debuggable = false
         }
         release {
-            minifyEnabled false
+            minifyEnabled = false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 }
 
