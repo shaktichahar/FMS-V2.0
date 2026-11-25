@@ -17,7 +17,9 @@ import android.webkit.JavascriptInterface;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -28,6 +30,7 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
+import androidx.webkit.WebViewAssetLoader;
 
 import org.json.JSONObject;
 
@@ -38,20 +41,38 @@ import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
 
+    private static final String BUNDLED_HOST = "appassets.androidplatform.net";
+    private static final String BUNDLED_ENTRY_URL = "https://" + BUNDLED_HOST + "/index.html";
+
     private WebView webView;
     private SwipeRefreshLayout swipeRefresh;
     private ValueCallback<Uri[]> filePathCallback;
     private ActivityResultLauncher<Intent> fileChooserLauncher;
-    private String allowedAppHost = "";
+    private WebViewAssetLoader assetLoader;
+    private String allowedAppHost = BUNDLED_HOST;
+    private String entryUrl = BUNDLED_ENTRY_URL;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        Uri baseUri = Uri.parse(BuildConfig.APP_URL);
-        if (baseUri.getHost() != null) {
-            allowedAppHost = baseUri.getHost().toLowerCase(Locale.US);
+        assetLoader = new WebViewAssetLoader.Builder()
+                .setDomain(BUNDLED_HOST)
+                .addPathHandler("/", new WebViewAssetLoader.AssetsPathHandler(this))
+                .build();
+
+        String configuredUrl = BuildConfig.APP_URL != null ? BuildConfig.APP_URL.trim() : "";
+        if (!configuredUrl.isEmpty()
+                && (configuredUrl.startsWith("https://") || configuredUrl.startsWith("http://"))) {
+            entryUrl = configuredUrl;
+            Uri baseUri = Uri.parse(configuredUrl);
+            if (baseUri.getHost() != null) {
+                allowedAppHost = baseUri.getHost().toLowerCase(Locale.US);
+            }
+        } else {
+            entryUrl = BUNDLED_ENTRY_URL;
+            allowedAppHost = BUNDLED_HOST;
         }
 
         fileChooserLauncher = registerForActivityResult(
@@ -92,7 +113,7 @@ public class MainActivity extends AppCompatActivity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
-        settings.setAllowFileAccess(true);
+        settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(true);
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
@@ -106,6 +127,23 @@ public class MainActivity extends AppCompatActivity {
         webView.addJavascriptInterface(new BlobDownloadBridge(), "LedgerFlowAndroid");
 
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                Uri uri = request.getUrl();
+                if (uri != null && BUNDLED_HOST.equalsIgnoreCase(uri.getHost())) {
+                    WebResourceResponse response = assetLoader.shouldInterceptRequest(uri);
+                    if (response != null) {
+                        return response;
+                    }
+                    // SPA route fallback to index.html for extension-less paths
+                    String path = uri.getPath();
+                    if (path == null || path.equals("/") || !path.contains(".")) {
+                        return assetLoader.shouldInterceptRequest(Uri.parse(BUNDLED_ENTRY_URL));
+                    }
+                }
+                return super.shouldInterceptRequest(view, request);
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
@@ -125,7 +163,8 @@ public class MainActivity extends AppCompatActivity {
                     return true;
                 }
                 String host = uri.getHost() != null ? uri.getHost().toLowerCase(Locale.US) : "";
-                if (host.equals(allowedAppHost)
+                if (host.equals(BUNDLED_HOST)
+                        || host.equals(allowedAppHost)
                         || host.endsWith(".run.app")
                         || host.endsWith(".firebaseapp.com")
                         || host.endsWith(".web.app")) {
@@ -137,6 +176,37 @@ public class MainActivity extends AppCompatActivity {
                     return true;
                 } catch (Exception ignored) {
                     return false;
+                }
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                if (request != null && request.isForMainFrame()) {
+                    swipeRefresh.setRefreshing(false);
+                    String failingUrl = request.getUrl() != null ? request.getUrl().toString() : "";
+                    if (!failingUrl.startsWith("https://" + BUNDLED_HOST)) {
+                        // Automatically fall back to bundled offline-ready LedgerFlow app
+                        view.loadUrl(BUNDLED_ENTRY_URL);
+                    }
+                }
+            }
+
+            @Override
+            public void onReceivedHttpError(
+                    WebView view,
+                    WebResourceRequest request,
+                    WebResourceResponse errorResponse
+            ) {
+                super.onReceivedHttpError(view, request, errorResponse);
+                if (request != null && request.isForMainFrame() && errorResponse != null) {
+                    int status = errorResponse.getStatusCode();
+                    String failingUrl = request.getUrl() != null ? request.getUrl().toString() : "";
+                    if (status >= 500 && !failingUrl.startsWith("https://" + BUNDLED_HOST)) {
+                        swipeRefresh.setRefreshing(false);
+                        // Automatically fall back to bundled offline-ready LedgerFlow app
+                        view.loadUrl(BUNDLED_ENTRY_URL);
+                    }
                 }
             }
 
@@ -249,7 +319,7 @@ public class MainActivity extends AppCompatActivity {
         if (savedInstanceState != null) {
             webView.restoreState(savedInstanceState);
         } else {
-            webView.loadUrl(BuildConfig.APP_URL);
+            webView.loadUrl(entryUrl);
         }
     }
 

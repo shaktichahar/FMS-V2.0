@@ -1,4 +1,5 @@
 import { auth } from './firebase';
+import { isStandaloneAndroidRuntime, localAppEngine } from './localAppEngine';
 import type {
   AnalyticsSummary,
   BackupCounts,
@@ -71,7 +72,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return data as T;
 }
 
-export const api = {
+const remoteApi = {
   // Auth & OTP Verification
   login: (username: string, password: string) =>
     request<OtpChallengeResponse>('/api/auth/login', {
@@ -442,3 +443,5 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 };
+
+export const api: typeof remoteApi = isStandaloneAndroidRuntime() ? localAppEngine : remoteApi;

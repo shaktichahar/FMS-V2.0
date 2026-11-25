@@ -1,4 +1,8 @@
-if ('serviceWorker' in navigator) {
+if (
+  'serviceWorker' in navigator &&
+  window.location.hostname !== 'appassets.androidplatform.net' &&
+  window.location.protocol !== 'file:'
+) {
   window.addEventListener('load', () => {
     navigator.serviceWorker
       .register('/sw.js', { scope: '/' })

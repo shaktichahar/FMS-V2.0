@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       app_url:
-        description: "Published HTTPS URL of your LedgerFlow app (leave default to use repo APP_URL variable or default URL)"
+        description: "Optional published HTTPS URL (leave blank to build a 100% self-contained standalone APK)"
         required: false
         default: ""
       create_release:
@@ -16,9 +16,12 @@ on:
     branches:
       - main
     paths:
+      - "src/**"
+      - "public/**"
+      - "index.html"
+      - "package.json"
+      - "vite.config.ts"
       - "android-apk/**"
-      - "public/pwa-512x512.png"
-      - "public/pwa-192x192.png"
       - ".github/workflows/build-android-apk.yml"
     tags:
       - "v*"
@@ -35,7 +38,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Resolve target LedgerFlow URL
+      - name: Resolve APK runtime mode
         id: resolve_url
         shell: bash
         env:
@@ -43,11 +46,29 @@ jobs:
           VAR_URL: ${{ vars.APP_URL }}
         run: |
           TARGET_URL="${INPUT_URL:-$VAR_URL}"
-          if [ -z "$TARGET_URL" ]; then
-            TARGET_URL="https://ais-pre-mon76kn4wttmrf7tqaxi6e-616579702543.asia-northeast1.run.app"
-          fi
           echo "url=$TARGET_URL" >> "$GITHUB_OUTPUT"
-          echo "Building LedgerFlow Android APK for URL: $TARGET_URL"
+          if [ -z "$TARGET_URL" ]; then
+            echo "mode=Standalone On-Device Bundled APK (Offline-Ready)" >> "$GITHUB_OUTPUT"
+            echo "Building LedgerFlow Android APK in Standalone Bundled Mode (no external server required)."
+          else
+            echo "mode=Connected Server Mode ($TARGET_URL) with Standalone Fallback" >> "$GITHUB_OUTPUT"
+            echo "Building LedgerFlow Android APK for URL: $TARGET_URL"
+          fi
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Build LedgerFlow Web Bundle & Embed into APK
+        shell: bash
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+          rm -rf android-apk/app/src/main/assets
+          mkdir -p android-apk/app/src/main/assets
+          cp -r dist/* android-apk/app/src/main/assets/
+          ls -la android-apk/app/src/main/assets
 
       - name: Sync LedgerFlow launcher icons
         shell: bash
@@ -106,12 +127,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest-apk' }}
-          APP_URL: ${{ steps.resolve_url.outputs.url }}
+          APK_MODE: ${{ steps.resolve_url.outputs.mode }}
         run: |
           RELEASE_NOTES=$(cat <<EOF
           Automated Android APK build for **LedgerFlow v2.0.0** (App Developed by Shakti Chahar).
 
-          - **Target App URL**: \`${APP_URL}\`
+          - **Build Mode**: ${APK_MODE}
           - **Direct Download**: Click **\`LedgerFlow-v2.0.0.apk\`** under **Assets** below to download on your Android phone, then tap the file to install (allow "Install unknown apps" if prompted).
           EOF
           )
@@ -133,15 +154,14 @@ jobs:
         env:
           REPO: ${{ github.repository }}
           TAG_NAME: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest-apk' }}
-          APP_URL: ${{ steps.resolve_url.outputs.url }}
+          APK_MODE: ${{ steps.resolve_url.outputs.mode }}
         run: |
           {
             echo "## LedgerFlow Android APK Ready"
             echo ""
             echo "- **Direct APK Download:** [Download LedgerFlow-v2.0.0.apk](https://github.com/${REPO}/releases/download/${TAG_NAME}/LedgerFlow-v2.0.0.apk)"
             echo "- **GitHub Releases Page:** [Open Releases](https://github.com/${REPO}/releases/tag/${TAG_NAME})"
-            echo "- **Target App URL:** \`${APP_URL}\`"
+            echo "- **Build Mode:** ${APK_MODE}"
             echo ""
             echo "You can also download the zipped APK from the **Artifacts** section below on this page."
           } >> "$GITHUB_STEP_SUMMARY"
-
