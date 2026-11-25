@@ -34,10 +34,18 @@ import androidx.webkit.WebViewAssetLoader;
 
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -49,6 +57,7 @@ public class MainActivity extends AppCompatActivity {
     private ValueCallback<Uri[]> filePathCallback;
     private ActivityResultLauncher<Intent> fileChooserLauncher;
     private WebViewAssetLoader assetLoader;
+    private final ExecutorService emailExecutor = Executors.newSingleThreadExecutor();
     private String allowedAppHost = BUNDLED_HOST;
     private String entryUrl = BUNDLED_ENTRY_URL;
 
@@ -124,7 +133,7 @@ public class MainActivity extends AppCompatActivity {
         cookieManager.setAcceptCookie(true);
         cookieManager.setAcceptThirdPartyCookies(webView, true);
 
-        webView.addJavascriptInterface(new BlobDownloadBridge(), "LedgerFlowAndroid");
+        webView.addJavascriptInterface(new AndroidBridge(), "LedgerFlowAndroid");
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
@@ -186,7 +195,6 @@ public class MainActivity extends AppCompatActivity {
                     swipeRefresh.setRefreshing(false);
                     String failingUrl = request.getUrl() != null ? request.getUrl().toString() : "";
                     if (!failingUrl.startsWith("https://" + BUNDLED_HOST)) {
-                        // Automatically fall back to bundled offline-ready LedgerFlow app
                         view.loadUrl(BUNDLED_ENTRY_URL);
                     }
                 }
@@ -204,7 +212,6 @@ public class MainActivity extends AppCompatActivity {
                     String failingUrl = request.getUrl() != null ? request.getUrl().toString() : "";
                     if (status >= 500 && !failingUrl.startsWith("https://" + BUNDLED_HOST)) {
                         swipeRefresh.setRefreshing(false);
-                        // Automatically fall back to bundled offline-ready LedgerFlow app
                         view.loadUrl(BUNDLED_ENTRY_URL);
                     }
                 }
@@ -331,6 +338,12 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    @Override
+    protected void onDestroy() {
+        emailExecutor.shutdownNow();
+        super.onDestroy();
+    }
+
     private String sanitizeFileName(String rawName) {
         String name = rawName == null ? "" : rawName.trim();
         name = name.replaceAll("[\\\\/:*?\"<>|]", "_").replace("..", "_");
@@ -340,7 +353,162 @@ public class MainActivity extends AppCompatActivity {
         return name;
     }
 
-    private class BlobDownloadBridge {
+    private String readStream(InputStream stream) {
+        if (stream == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line);
+            }
+        } catch (Exception ignored) {
+            // Return whatever was read
+        }
+        return sb.toString();
+    }
+
+    private void notifyEmailOtpResult(String requestId, boolean ok, String errorMessage) {
+        runOnUiThread(() -> {
+            if (webView == null) {
+                return;
+            }
+            String js = "if(window.__lfOnOtpEmailResult){window.__lfOnOtpEmailResult("
+                    + JSONObject.quote(requestId != null ? requestId : "") + ","
+                    + (ok ? "true" : "false") + ","
+                    + JSONObject.quote(errorMessage != null ? errorMessage : "")
+                    + ");}";
+            webView.evaluateJavascript(js, null);
+        });
+    }
+
+    private class AndroidBridge {
+        @JavascriptInterface
+        public boolean isOtpEmailConfigured() {
+            String webhookUrl = BuildConfig.OTP_EMAIL_WEBHOOK_URL != null
+                    ? BuildConfig.OTP_EMAIL_WEBHOOK_URL.trim()
+                    : "";
+            return webhookUrl.startsWith("https://");
+        }
+
+        @JavascriptInterface
+        public void sendOtpEmail(
+                String requestId,
+                String toEmail,
+                String fullName,
+                String loginIdentifier,
+                String otp,
+                String purpose
+        ) {
+            String webhookUrl = BuildConfig.OTP_EMAIL_WEBHOOK_URL != null
+                    ? BuildConfig.OTP_EMAIL_WEBHOOK_URL.trim()
+                    : "";
+            if (!webhookUrl.startsWith("https://")) {
+                notifyEmailOtpResult(
+                        requestId,
+                        false,
+                        "Email OTP service is not configured yet. Add OTP_EMAIL_WEBHOOK_URL in GitHub Repository Secrets and rebuild the APK."
+                );
+                return;
+            }
+
+            emailExecutor.execute(() -> {
+                HttpURLConnection conn = null;
+                HttpURLConnection redirectConn = null;
+                try {
+                    JSONObject payload = new JSONObject();
+                    payload.put("to", toEmail != null ? toEmail.trim() : "");
+                    payload.put("fullName", fullName != null ? fullName.trim() : "LedgerFlow User");
+                    payload.put("loginIdentifier", loginIdentifier != null ? loginIdentifier.trim() : "");
+                    payload.put("otp", otp != null ? otp.trim() : "");
+                    payload.put("purpose", purpose != null ? purpose.trim() : "login");
+                    if (BuildConfig.OTP_EMAIL_WEBHOOK_SECRET != null
+                            && !BuildConfig.OTP_EMAIL_WEBHOOK_SECRET.trim().isEmpty()) {
+                        payload.put("secret", BuildConfig.OTP_EMAIL_WEBHOOK_SECRET.trim());
+                    }
+
+                    byte[] bodyBytes = payload.toString().getBytes(StandardCharsets.UTF_8);
+
+                    conn = (HttpURLConnection) new URL(webhookUrl).openConnection();
+                    conn.setRequestMethod("POST");
+                    conn.setInstanceFollowRedirects(false);
+                    conn.setConnectTimeout(15000);
+                    conn.setReadTimeout(15000);
+                    conn.setDoOutput(true);
+                    conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+                    conn.setRequestProperty("Accept", "application/json");
+                    try (OutputStream os = conn.getOutputStream()) {
+                        os.write(bodyBytes);
+                        os.flush();
+                    }
+
+                    int code = conn.getResponseCode();
+                    String responseBody;
+
+                    // Google Apps Script Web Apps execute doPost() and return 302 -> GET echo URL
+                    if (code == HttpURLConnection.HTTP_MOVED_TEMP
+                            || code == HttpURLConnection.HTTP_MOVED_PERM
+                            || code == HttpURLConnection.HTTP_SEE_OTHER
+                            || code == 307
+                            || code == 308) {
+                        String location = conn.getHeaderField("Location");
+                        if (location != null && !location.trim().isEmpty()) {
+                            redirectConn = (HttpURLConnection) new URL(location).openConnection();
+                            redirectConn.setRequestMethod("GET");
+                            redirectConn.setInstanceFollowRedirects(true);
+                            redirectConn.setConnectTimeout(15000);
+                            redirectConn.setReadTimeout(15000);
+                            redirectConn.setRequestProperty("Accept", "application/json");
+                            code = redirectConn.getResponseCode();
+                            responseBody = readStream(
+                                    code >= 400 ? redirectConn.getErrorStream() : redirectConn.getInputStream()
+                            );
+                        } else {
+                            responseBody = "";
+                        }
+                    } else {
+                        responseBody = readStream(
+                                code >= 400 ? conn.getErrorStream() : conn.getInputStream()
+                        );
+                    }
+
+                    if (code < 200 || code >= 300) {
+                        notifyEmailOtpResult(
+                                requestId,
+                                false,
+                                "Email OTP service returned HTTP " + code + ". Please check your Apps Script deployment."
+                        );
+                        return;
+                    }
+
+                    if (!responseBody.trim().isEmpty() && responseBody.trim().startsWith("{")) {
+                        JSONObject resJson = new JSONObject(responseBody);
+                        if (resJson.has("ok") && !resJson.optBoolean("ok", true)) {
+                            String errMsg = resJson.optString("error", "Email OTP delivery failed.");
+                            notifyEmailOtpResult(requestId, false, errMsg);
+                            return;
+                        }
+                    }
+
+                    notifyEmailOtpResult(requestId, true, "");
+                } catch (Exception e) {
+                    notifyEmailOtpResult(
+                            requestId,
+                            false,
+                            "Unable to send OTP email. Please check internet connectivity and try again."
+                    );
+                } finally {
+                    if (redirectConn != null) {
+                        redirectConn.disconnect();
+                    }
+                    if (conn != null) {
+                        conn.disconnect();
+                    }
+                }
+            });
+        }
+
         @JavascriptInterface
         public void saveBase64File(String dataUrl, String suggestedName, String mimeType) {
             if (dataUrl == null || dataUrl.isEmpty()) {

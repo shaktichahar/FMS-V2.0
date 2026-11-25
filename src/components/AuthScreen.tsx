@@ -266,23 +266,6 @@ export function AuthScreen({ onAuthenticated, sessionMessage }: AuthScreenProps)
                 </p>
               </div>
 
-              {/* Preview Code Helper (only when GMAIL_APP_PASSWORD / SMTP / Twilio is not yet configured) */}
-              {otpChallenge.delivery.mode === 'preview' && otpChallenge.delivery.previewCode && (
-                <div className="mb-5 px-3.5 py-3 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-semibold text-amber-900">
-                      Verification Code (Email SMTP Setup Pending)
-                    </p>
-                    <p className="text-[11px] text-amber-800 mt-0.5">
-                      Add <span className="font-mono font-semibold">GMAIL_APP_PASSWORD</span> in Settings → Secrets to deliver this OTP directly via email.
-                    </p>
-                  </div>
-                  <span className="font-mono tabular-nums text-base font-bold tracking-widest text-amber-950 bg-white border border-amber-300 rounded-lg px-2.5 py-1.5 shrink-0">
-                    {otpChallenge.delivery.previewCode}
-                  </span>
-                </div>
-              )}
-
               {error && (
                 <div
                   role="alert"

@@ -473,13 +473,111 @@ function findUserByIdentifierLocal(db: LocalDatabaseState, identifier: string): 
   );
 }
 
-function createOtpChallengeForUser(
+interface LedgerFlowAndroidNativeBridge {
+  isOtpEmailConfigured?: () => boolean;
+  sendOtpEmail?: (
+    requestId: string,
+    toEmail: string,
+    fullName: string,
+    loginIdentifier: string,
+    otp: string,
+    purpose: string
+  ) => void;
+}
+
+declare global {
+  interface Window {
+    LedgerFlowAndroid?: LedgerFlowAndroidNativeBridge;
+    __lfOnOtpEmailResult?: (requestId: string, ok: boolean, errorMessage: string) => void;
+  }
+}
+
+const pendingEmailOtpRequests = new Map<
+  string,
+  { resolve: () => void; reject: (err: Error) => void; timer: number }
+>();
+
+function ensureAndroidEmailCallbackRegistered(): void {
+  if (typeof window === 'undefined' || window.__lfOnOtpEmailResult) return;
+  window.__lfOnOtpEmailResult = (requestId: string, ok: boolean, errorMessage: string) => {
+    const entry = pendingEmailOtpRequests.get(requestId);
+    if (!entry) return;
+    window.clearTimeout(entry.timer);
+    pendingEmailOtpRequests.delete(requestId);
+    if (ok) {
+      entry.resolve();
+    } else {
+      entry.reject(new Error(errorMessage || 'Failed to send OTP email.'));
+    }
+  };
+}
+
+async function deliverEmailOtpFromDevice(params: {
+  toEmail: string;
+  fullName: string;
+  loginIdentifier: string;
+  otp: string;
+  purpose: 'login' | 'direct-otp' | 'register';
+}): Promise<void> {
+  const bridge = typeof window !== 'undefined' ? window.LedgerFlowAndroid : undefined;
+  if (bridge && typeof bridge.sendOtpEmail === 'function') {
+    if (typeof bridge.isOtpEmailConfigured === 'function' && !bridge.isOtpEmailConfigured()) {
+      throw new Error(
+        'Email OTP delivery is not configured for this APK yet. Add OTP_EMAIL_WEBHOOK_URL in GitHub Repository Secrets and rebuild the APK so OTPs are sent to your registered email.'
+      );
+    }
+    ensureAndroidEmailCallbackRegistered();
+    const requestId = uid('mail');
+    return new Promise<void>((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        pendingEmailOtpRequests.delete(requestId);
+        reject(new Error('Email OTP delivery timed out. Please check your internet connection and try again.'));
+      }, 20000);
+      pendingEmailOtpRequests.set(requestId, { resolve, reject, timer });
+      try {
+        bridge.sendOtpEmail!(
+          requestId,
+          params.toEmail,
+          params.fullName,
+          params.loginIdentifier,
+          params.otp,
+          params.purpose
+        );
+      } catch (err) {
+        window.clearTimeout(timer);
+        pendingEmailOtpRequests.delete(requestId);
+        reject(err instanceof Error ? err : new Error('Unable to trigger email OTP delivery.'));
+      }
+    });
+  }
+
+  throw new Error(
+    'Email OTP delivery is not configured for this build. Configure OTP_EMAIL_WEBHOOK_URL in GitHub Secrets and rebuild the APK so OTPs are sent to registered emails.'
+  );
+}
+
+async function createOtpChallengeForUser(
   user: LocalUserRecord,
   purpose: 'login' | 'direct-otp' | 'register'
-): OtpChallengeResponse {
+): Promise<OtpChallengeResponse> {
+  const cleanEmail = normalizeEmail(user.email || user.username);
+  if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleanEmail)) {
+    throw new Error(
+      'No valid registered email address is linked to this account. Please contact your administrator.'
+    );
+  }
+
   const code = String(Math.floor(100000 + Math.random() * 900000));
+  await deliverEmailOtpFromDevice({
+    toEmail: cleanEmail,
+    fullName: user.fullName,
+    loginIdentifier: user.username,
+    otp: code,
+    purpose,
+  });
+
   const id = uid('otp');
-  const mEmail = maskEmail(user.email);
+  const mEmail = maskEmail(cleanEmail);
   const mMobile = maskMobile(user.mobile);
   const challenge: LocalOtpChallenge = {
     id,
@@ -503,16 +601,11 @@ function createOtpChallengeForUser(
     expiresInSeconds: 300,
     resendCooldownSeconds: 30,
     delivery: {
-      emailSent: false,
+      emailSent: true,
       smsSent: false,
-      mode: 'preview',
-      channels: [
-        ...(mEmail ? (['email'] as const) : []),
-        ...(mMobile ? (['mobile'] as const) : []),
-      ],
-      notice:
-        'Offline Android App mode active — use the 6-digit verification code displayed below to sign in securely on this device.',
-      previewCode: code,
+      mode: 'live',
+      channels: ['email'],
+      notice: `OTP sent to your registered email (${mEmail || cleanEmail}). Please check your inbox (and spam folder).`,
     },
   };
 }
@@ -821,9 +914,10 @@ export const localAppEngine = {
       createdAt: new Date().toISOString(),
       password: payload.password,
     };
+    const challenge = await createOtpChallengeForUser(created, 'register');
     db.users.push(created);
     saveDb(db);
-    return createOtpChallengeForUser(created, 'register');
+    return challenge;
   },
 
   async syncGoogleSession(_idToken: string): Promise<{ user: SafeUser; loginAt?: string }> {

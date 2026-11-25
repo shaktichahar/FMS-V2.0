@@ -20,10 +20,9 @@ export interface SafeUser {
 export interface OtpDeliveryInfo {
   emailSent: boolean;
   smsSent: boolean;
-  mode: 'live' | 'preview';
+  mode: 'live';
   channels: Array<'email' | 'mobile'>;
   notice: string;
-  previewCode?: string;
 }
 
 export type OtpPurpose = 'login' | 'direct-otp' | 'register';

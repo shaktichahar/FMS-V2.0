@@ -7,6 +7,10 @@ on:
         description: "Optional published HTTPS URL (leave blank to build a 100% self-contained standalone APK)"
         required: false
         default: ""
+      otp_email_webhook_url:
+        description: "Optional Google Apps Script OTP Email Webhook URL (overrides repo OTP_EMAIL_WEBHOOK_URL secret/var)"
+        required: false
+        default: ""
       create_release:
         description: "Also publish a GitHub Release with direct LedgerFlow.apk download link"
         type: boolean
@@ -104,6 +108,8 @@ jobs:
         shell: bash
         env:
           APP_URL: ${{ steps.resolve_url.outputs.url }}
+          OTP_EMAIL_WEBHOOK_URL: ${{ github.event.inputs.otp_email_webhook_url || secrets.OTP_EMAIL_WEBHOOK_URL || vars.OTP_EMAIL_WEBHOOK_URL }}
+          OTP_EMAIL_WEBHOOK_SECRET: ${{ secrets.OTP_EMAIL_WEBHOOK_SECRET }}
         run: |
           gradle -p android-apk assembleDebug -PAPP_URL="$APP_URL" --no-daemon
 

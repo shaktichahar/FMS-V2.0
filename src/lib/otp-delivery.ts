@@ -62,6 +62,44 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
+async function sendEmailOtpViaWebhook(
+  toEmail: string,
+  fullName: string,
+  loginIdentifier: string,
+  otp: string,
+  purpose: 'login' | 'direct-otp' | 'register' = 'login'
+): Promise<boolean> {
+  const webhookUrl = process.env.OTP_EMAIL_WEBHOOK_URL?.trim();
+  if (!webhookUrl) {
+    return false;
+  }
+  const secret = process.env.OTP_EMAIL_WEBHOOK_SECRET?.trim() || '';
+  const res = await fetch(webhookUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    redirect: 'follow',
+    body: JSON.stringify({
+      to: toEmail,
+      fullName,
+      loginIdentifier,
+      otp,
+      purpose,
+      secret,
+    }),
+  });
+  const text = await res.text().catch(() => '');
+  let parsed: { ok?: boolean; error?: string } | null = null;
+  try {
+    parsed = JSON.parse(text) as { ok?: boolean; error?: string };
+  } catch {
+    parsed = null;
+  }
+  if (!res.ok || (parsed && parsed.ok === false)) {
+    throw new Error(parsed?.error || `Email webhook failed (${res.status}).`);
+  }
+  return true;
+}
+
 async function sendEmailOtp(
   toEmail: string,
   fullName: string,
@@ -72,7 +110,7 @@ async function sendEmailOtp(
   const gmailPass = process.env.GMAIL_APP_PASSWORD?.trim();
   const smtpPass = process.env.SMTP_PASS?.trim() || gmailPass;
   if (!smtpPass) {
-    return false;
+    return sendEmailOtpViaWebhook(toEmail, fullName, loginIdentifier, otp, purpose);
   }
 
   const host = process.env.SMTP_HOST?.trim() || 'smtp.gmail.com';
@@ -165,9 +203,8 @@ async function sendSmsOtp(toMobile: string, otp: string): Promise<boolean> {
 }
 
 /**
- * Dispatches OTP directly to the user's own registered email and/or registered mobile number:
- * - For new account registration (`purpose === 'register'`), sends Email OTP to the user's registered email.
- * - For login (`purpose === 'login' | 'direct-otp'`), sends Email OTP to the user's registered email and SMS OTP to the user's registered mobile (if present).
+ * Dispatches OTP directly to the user's own registered email and/or registered mobile number.
+ * Never returns an on-screen preview code; throws if live email/SMS delivery is unavailable.
  */
 export async function dispatchLoginOtp(params: {
   fullName: string;
@@ -230,7 +267,7 @@ export async function dispatchLoginOtp(params: {
     const notice =
       failures.length > 0
         ? `OTP sent to your ${deliveredParts.join(' and ')} (${failures.join('/')} gateway unavailable).`
-        : `OTP sent to your ${deliveredParts.join(' and ')}.`;
+        : `OTP sent to your ${deliveredParts.join(' and ')}. Please check your inbox.`;
 
     return {
       emailSent,
@@ -241,17 +278,13 @@ export async function dispatchLoginOtp(params: {
     };
   }
 
-  const targetParts: string[] = [];
-  if (displayEmail) targetParts.push(`email (${displayEmail})`);
-  if (displayMobile) targetParts.push(`mobile (${displayMobile})`);
-  const targetLabel = targetParts.join(' and ') || 'registered contact';
+  if (failures.length > 0) {
+    throw new Error(
+      `Unable to send OTP to your registered email (${displayEmail || 'registered address'}). Please check your email delivery configuration and try again.`
+    );
+  }
 
-  return {
-    emailSent: false,
-    smsSent: false,
-    mode: 'preview',
-    channels,
-    notice: `OTP is addressed to your registered ${targetLabel}. Add GMAIL_APP_PASSWORD (for email) or Twilio credentials (for SMS) in Settings → Secrets for live delivery.`,
-    previewCode: params.otp,
-  };
+  throw new Error(
+    'Email OTP service is not configured yet. Add GMAIL_APP_PASSWORD or OTP_EMAIL_WEBHOOK_URL in Settings → Secrets so OTPs are sent directly to registered emails.'
+  );
 }

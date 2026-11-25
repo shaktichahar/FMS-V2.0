@@ -1150,7 +1150,19 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
       passwordSalt: pw.salt,
     });
 
-    const challenge = await issueOtpChallengeForUser(newUser, 'register');
+    let challenge: OtpChallengeResponse;
+    try {
+      challenge = await issueOtpChallengeForUser(newUser, 'register');
+    } catch (otpErr) {
+      await deleteUserRecord(newUser.id).catch(() => {});
+      res.status(400).json({
+        error:
+          otpErr instanceof Error
+            ? otpErr.message
+            : 'Unable to send verification OTP email right now.',
+      });
+      return;
+    }
     res.status(201).json(challenge);
   } catch (err) {
     console.error('POST /api/auth/register error:', err);
